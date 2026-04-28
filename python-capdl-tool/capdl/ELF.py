@@ -9,9 +9,6 @@ Functionality related to handling ELF file input. This is the only section of
 this module that relies on elftools, so it is possible to use this module
 without elftools installed by not importing this particular file.
 """
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
-from future.utils import iteritems
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.constants import P_FLAGS
@@ -20,7 +17,6 @@ from .util import PAGE_SIZE, round_down, page_sizes
 from .PageCollection import PageCollection
 import os
 import re
-import six
 
 
 def _decode(data):
@@ -45,7 +41,7 @@ class ELF(object):
         parameter 'elf', or a stream to ELF data. 'name' is only used when
         generating CapDL from the ELF file.
         """
-        if isinstance(elf, six.string_types):
+        if isinstance(elf, str):
             f = open(elf, 'rb')
         else:
             f = elf
@@ -149,7 +145,7 @@ class ELF(object):
         existing_pages = []
         if addr_space:
             # Update symbols with their vaddrs in the AddressSpaceAllocator if we were given one
-            for (symbol, (sizes, caps)) in iteritems(addr_space.get_symbols_and_clear()):
+            for (symbol, (sizes, caps)) in addr_space.get_symbols_and_clear().items():
                 assert self.get_symbol_size(symbol) >= sum(sizes), \
                     "Symbol (%s:%d) must have same or greater size than supplied cap range (%d)" % (
                         symbol, self.get_symbol_size(symbol), sum(sizes))

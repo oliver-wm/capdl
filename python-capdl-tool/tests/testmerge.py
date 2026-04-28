@@ -5,9 +5,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 #
 
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
-
+import unittest
 import capdl
 from tests import CapdlTestCase
 
@@ -21,17 +19,20 @@ class TestSpec(CapdlTestCase):
         spec1 = capdl.Spec()
         spec2 = capdl.Spec()
         spec1.merge(spec2)
-        assert len(spec1.objs) == 0
+        self.assertEqual(len(spec1.objs), 0)
 
         spec1 = capdl.Spec()
         spec1.add_object(a)
         spec2 = capdl.Spec()
         spec1.merge(spec2)
-        assert spec1.objs == set([a])
+        self.assertEqual(spec1.objs, {a})
 
         spec1 = capdl.Spec()
         spec1.add_object(a)
         spec2 = capdl.Spec()
         spec2.add_object(b)
         spec1.merge(spec2)
-        assert spec1.objs == set([a, b])
+        self.assertEqual(spec1.objs, {a, b})
+
+if __name__ == '__main__':
+    unittest.main()

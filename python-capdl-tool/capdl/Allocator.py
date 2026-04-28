@@ -4,14 +4,9 @@
 # SPDX-License-Identifier: BSD-2-Clause
 #
 
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
-
 import abc
 import collections
 import logging
-
-import six
 from sortedcontainers import SortedList, SortedSet, SortedDict
 
 from .Cap import Cap
@@ -19,17 +14,17 @@ from .Object import Frame, PageTable, PageDirectory, CNode, Endpoint, \
     Notification, TCB, Untyped, IOPageTable, Object, IRQ, IOPorts, IODevice, \
     ARMIODevice, VCPU, ASIDPool, SC, SchedControl, RTReply, ObjectType, \
     ObjectRights, IOAPICIRQ, MSIIRQ, IRQControl, get_object_size, ASIDControl, \
-    DomainControl, is_aligned, ARMIRQMode, ARMIRQ, ContextBank, StreamID, SMC, ARMSGISignal
+    DomainControl, is_aligned, ARMIRQ, ContextBank, StreamID, SMC, ARMSGISignal
 from capdl.util import ctz
 from .Spec import Spec
 
 
 class AllocatorState(object):
-    def __init__(self, obj_space, cspaces={}, pds={}, addr_spaces={}):
+    def __init__(self, obj_space, cspaces=None, pds=None, addr_spaces=None):
         self.obj_space = obj_space
-        self.cspaces = cspaces
-        self.pds = pds
-        self.addr_spaces = addr_spaces
+        self.cspaces = cspaces or {}
+        self.pds = pds or {}
+        self.addr_spaces = addr_spaces or {}
 
 
 class RenderState(AllocatorState):
@@ -59,130 +54,148 @@ class ObjectAllocator(object):
         self.spec = Spec()
         self.labels = collections.defaultdict(set)
         self.name_to_object = {}
+        self.object_to_label = {}
+        self._builders = self._build_dispatch_table()
 
-    def _assign_label(self, label, obj):
-        self.labels[label].add(obj)
+    def _build_dispatch_table(self):
+        """Map ObjectType -> builder(name, kwargs) -> Object.
 
-    def _remove_label(self, obj):
-        for l, objs in self.labels.items():
-            if obj in objs:
-                self.labels[l].remove(obj)
-                break
+        Architecture-specific frame sizes and the IRQ family are handled by
+        dedicated branches in `alloc` because they don't key cleanly off a
+        single ObjectType value.
+        """
+        T = ObjectType
+        return {
+            T.seL4_UntypedObject:      self._make_untyped,
+            T.seL4_TCBObject:          lambda n, kw: TCB(n),
+            T.seL4_EndpointObject:     lambda n, kw: Endpoint(n),
+            T.seL4_NotificationObject: lambda n, kw: Notification(n),
+            T.seL4_CapTableObject:     lambda n, kw: CNode(n, **kw),
+            T.seL4_FrameObject:        self._make_default_frame,
+            T.seL4_PageTableObject:    lambda n, kw: PageTable(n),
+            T.seL4_PageDirectoryObject: lambda n, kw: PageDirectory(n),
+            T.seL4_IOPageTableObject:  lambda n, kw: IOPageTable(n),
+            T.seL4_IA32_IOPort:        self._make_ioport,
+            T.seL4_IA32_IOSpace:       lambda n, kw: IODevice(n, **kw),
+            T.seL4_ARM_IOSpace:        lambda n, kw: ARMIODevice(n, **kw),
+            T.seL4_VCPU:               lambda n, kw: VCPU(n),
+            T.seL4_ARM_SGI_Signal:     lambda n, kw: ARMSGISignal(n, **kw),
+            T.seL4_IRQControl:         lambda n, kw: IRQControl(n),
+            T.seL4_ASID_Control:       lambda n, kw: ASIDControl(n),
+            T.seL4_DomainControl:      lambda n, kw: DomainControl(n),
+            T.seL4_ASID_Pool:          lambda n, kw: ASIDPool(n),
+            T.seL4_SchedContextObject: lambda n, kw: SC(n),
+            T.seL4_SchedControl:       lambda n, kw: SchedControl(n, kw.get('core', 0)),
+            T.seL4_RTReplyObject:      lambda n, kw: RTReply(n),
+            T.seL4_ARMSID:             lambda n, kw: StreamID(n),
+            T.seL4_ARMCB:              lambda n, kw: ContextBank(n),
+            T.seL4_ARMSMC:             lambda n, kw: SMC(n),
+            # IRQ handler is special-cased in _construct() because it dispatches
+            # on kwargs rather than ObjectType.
+        }
 
-    def relabel(self, label, obj):
-        self._remove_label(obj)
-        self._assign_label(label, obj)
+    @staticmethod
+    def _make_untyped(name, kwargs):
+        size_bits = kwargs.get('size_bits', 12)
+        paddr = kwargs.get('paddr', None)
+        assert paddr != 0
+        return Untyped(name, size_bits, paddr)
+
+    @staticmethod
+    def _make_default_frame(name, kwargs):
+        kwargs.setdefault('size', 4096)
+        return Frame(name, **kwargs)
+
+    @staticmethod
+    def _make_ioport(name, kwargs):
+        if 'start_port' in kwargs and 'end_port' in kwargs:
+            return IOPorts(name, start_port=kwargs['start_port'],
+                           end_port=kwargs['end_port'])
+        raise ValueError("seL4_IA32_IOPort requires start_port and end_port")
+
+    @staticmethod
+    def _make_irq_handler(name, kwargs):
+        notification = kwargs.pop('notification', None)
+
+        if 'trigger' in kwargs or 'target' in kwargs:
+            obj = ARMIRQ(name, **kwargs)
+        elif 'number' in kwargs:
+            obj = IRQ(name, kwargs['number'])
+        elif all(k in kwargs for k in ('vector', 'ioapic', 'ioapic_pin', 'level', 'polarity')):
+            obj = IOAPICIRQ(name, kwargs['vector'], kwargs['ioapic'],
+                            kwargs['ioapic_pin'], kwargs['level'], kwargs['polarity'])
+        elif all(k in kwargs for k in ('vector', 'handle', 'pci_bus', 'pci_dev', 'pci_fun')):
+            obj = MSIIRQ(name, kwargs['vector'], kwargs['handle'],
+                         kwargs['pci_bus'], kwargs['pci_dev'], kwargs['pci_fun'])
+        else:
+            raise ValueError(
+                "IRQHandler objects must define one of: "
+                "(number | vector,ioapic,ioapic_pin,level,polarity | "
+                "vector,handle,pci_bus,pci_dev,pci_fun)")
+
+        if notification is not None:
+            obj.set_notification(notification)
+        return obj
 
     def alloc(self, type, name=None, label=None, **kwargs):
         if name is None:
             name = '%s%d' % (self.prefix, self.counter)
 
-        o = self.name_to_object.get(name)
-        if o is not None:
-            assert o in self.labels.get(label, set()), \
-                'attempt to allocate object %s under a new, differing label' % o.name
-            return o
+        existing = self.name_to_object.get(name)
+        if existing is not None:
+            assert existing in self.labels[label], (
+                'attempt to allocate object %s under a new, differing label'
+                % existing.name)
+            return existing
 
         self.counter += 1
-        frame_type = [page for page in self.spec.arch.get_pages() if page == type]
-        if type == ObjectType.seL4_UntypedObject:
-            size_bits = kwargs.get('size_bits', 12)
-            paddr = kwargs.get('paddr', None)
-            assert (paddr != 0)
-            o = Untyped(name, size_bits, paddr)
-        elif type == ObjectType.seL4_TCBObject:
-            o = TCB(name)
-        elif type == ObjectType.seL4_EndpointObject:
-            o = Endpoint(name)
-        elif type == ObjectType.seL4_NotificationObject:
-            o = Notification(name)
-        elif type == ObjectType.seL4_CapTableObject:
-            o = CNode(name, **kwargs)
-        elif type == ObjectType.seL4_FrameObject:
-            if 'size' not in kwargs:
-                kwargs['size'] = 4096
-            o = Frame(name, **kwargs)
-        elif type == ObjectType.seL4_PageTableObject:
-            o = PageTable(name)
-        elif type == self.spec.arch.vspace().object:
-            o = self.spec.arch.vspace().make_object(name)
-        elif type == ObjectType.seL4_PageDirectoryObject:
-            o = PageDirectory(name)
-        elif type == ObjectType.seL4_IOPageTableObject:
-            o = IOPageTable(name)
-        elif type == ObjectType.seL4_IA32_IOPort:
-            # There is only one IOPort object in the system, which describes the entire
-            # port region.
-            if 'start_port' in kwargs and 'end_port' in kwargs:
-                o = IOPorts(name, start_port=kwargs['start_port'], end_port=kwargs['end_port'])
-            else:
-                raise ValueError
-        elif type == ObjectType.seL4_IA32_IOSpace:
-            o = IODevice(name, **kwargs)
-        elif type == ObjectType.seL4_ARM_IOSpace:
-            o = ARMIODevice(name, **kwargs)
-        elif type == ObjectType.seL4_VCPU:
-            o = VCPU(name)
-        elif type == ObjectType.seL4_IRQHandler:
-            notification = None
-            if 'notification' in kwargs:
-                notification = kwargs['notification']
-                del kwargs['notification']
+        obj = self._construct(type, name, kwargs)
 
-            if 'trigger' in kwargs or 'target' in kwargs:
-                o = ARMIRQ(name, **kwargs)
-            elif 'number' in kwargs:
-                o = IRQ(name, kwargs['number'])
-            elif 'vector' in kwargs and 'ioapic' in kwargs \
-                    and 'ioapic_pin' in kwargs and 'level' in kwargs and 'polarity' in kwargs:
-                o = IOAPICIRQ(name, kwargs['vector'], kwargs['ioapic'], kwargs['ioapic_pin'],
-                              kwargs['level'], kwargs['polarity'])
-            elif 'vector' in kwargs and 'handle' in kwargs \
-                    and 'pci_bus' in kwargs and 'pci_dev' in kwargs and 'pci_fun' in kwargs:
-                o = MSIIRQ(name, kwargs['vector'], kwargs['handle'], kwargs['pci_bus'],
-                           kwargs['pci_dev'], kwargs['pci_fun'])
-            else:
-                raise ValueError("IRQHandler objects must define (number|vector,ioapic,ioapic_pin,level,"
-                                 "polarity|vector,handle,pci_bus,pci_dev,pci_fun)")
+        self.spec.add_object(obj)
+        self.name_to_object[name] = obj
+        self._assign_label(label, obj)
+        return obj
 
-            if notification is not None:
-                o.set_notification(notification)
-        elif type == ObjectType.seL4_ARM_SGI_Signal:
-            o = ARMSGISignal(name, **kwargs)
-        elif type == ObjectType.seL4_IRQControl:
-            o = IRQControl(name)
-        elif type == ObjectType.seL4_ASID_Control:
-            o = ASIDControl(name)
-        elif type == ObjectType.seL4_DomainControl:
-            o = DomainControl(name)
-        elif type == ObjectType.seL4_ASID_Pool:
-            o = ASIDPool(name)
-        elif len(frame_type) == 1:
-            o = Frame(name, get_object_size(frame_type[0]), **kwargs)
-        elif type == ObjectType.seL4_SchedContextObject:
-            o = SC(name)
-        elif type == ObjectType.seL4_SchedControl:
-            core = kwargs.get('core', 0)
-            o = SchedControl(name, core)
-        elif type == ObjectType.seL4_RTReplyObject:
-            o = RTReply(name)
-        elif type == ObjectType.seL4_ARMSID:
-            o = StreamID(name)
-        elif type == ObjectType.seL4_ARMCB:
-            o = ContextBank(name)
-        elif type == ObjectType.seL4_ARMSMC:
-            o = SMC(name)
-        else:
+    def _construct(self, type, name, kwargs):
+        # IRQ handler dispatches on kwargs, not ObjectType — keep it special.
+        if type == ObjectType.seL4_IRQHandler:
+            return self._make_irq_handler(name, kwargs)
+
+        # Architecture-specific vspace root.
+        if type == self.spec.arch.vspace().object:
+            return self.spec.arch.vspace().make_object(name)
+
+        # Architecture-specific frame sizes (e.g. 2M, 1G pages).
+        for page in self.spec.arch.get_pages():
+            if page == type:
+                return Frame(name, get_object_size(page), **kwargs)
+
+        builder = self._builders.get(type)
+        if builder is None:
             raise Exception('Invalid object type %s' % type)
-        self.spec.add_object(o)
-        self.name_to_object[name] = o
-        self._assign_label(label, o)
-        return o
+        return builder(name, kwargs)
+
+    def _assign_label(self, label, obj):
+        if obj in self.object_to_label:
+            self._remove_label(obj)
+        self.labels[label].add(obj)
+        self.object_to_label[obj] = label
+
+    def _remove_label(self, obj):
+        label = self.object_to_label.pop(obj, None)
+        if label is not None:
+            self.labels[label].discard(obj)
+
+    def relabel(self, label, obj):
+        self._remove_label(obj)
+        self._assign_label(label, obj)
 
     def merge(self, spec, label=None):
         assert isinstance(spec, Spec)
         self.spec.merge(spec)
-        [self._assign_label(label, x) for x in spec.objs]
+        for x in spec.objs:
+            if x.name in self.name_to_object and self.name_to_object[x.name] is not x:
+                raise ValueError("merge: name collision on %s" % x.name)
         self.name_to_object.update({x.name: x for x in spec})
 
     def __contains__(self, item):
@@ -235,14 +248,15 @@ class CSpaceAllocator(object):
             cap = None
         else:
             if 'rights' in kwargs:
+                rights = kwargs.pop('rights')
                 assert 'read' not in kwargs
                 assert 'write' not in kwargs
                 assert 'grant' not in kwargs
                 assert 'grantreply' not in kwargs
-                kwargs['read'] = kwargs['rights'] & ObjectRights.seL4_CanRead > 0
-                kwargs['write'] = kwargs['rights'] & ObjectRights.seL4_CanWrite > 0
-                kwargs['grant'] = kwargs['rights'] & ObjectRights.seL4_CanGrant > 0
-                kwargs['grantreply'] = kwargs['rights'] & ObjectRights.seL4_CanGrantReply > 0
+                kwargs['read'] = rights & ObjectRights.seL4_CanRead > 0
+                kwargs['write'] = rights & ObjectRights.seL4_CanWrite > 0
+                kwargs['grant'] = rights & ObjectRights.seL4_CanGrant > 0
+                kwargs['grantreply'] = rights & ObjectRights.seL4_CanGrantReply > 0
             cap = Cap(obj, **kwargs)
         if isinstance(obj, CNode):
             obj.update_guard_size_caps.append(cap)
@@ -362,32 +376,32 @@ class ASIDTableAllocator(object):
         Therefore, we raise AllocatorException if the spec's asid_high numbers cannot
         be obtained by the C loader.
         """
-        assert (isinstance(spec, Spec))
+        assert isinstance(spec, Spec)
 
         num_asid_high = get_object_size(ObjectType.seL4_ASID_Table)
         free_asid_highs = SortedSet(range(num_asid_high))
         free_asid_highs.remove(0)  # Init thread's
 
-        asid_pools = []
+        # Collect ASID pools deterministically.
+        asid_pools = sorted(
+            (obj for obj in spec.objs if isinstance(obj, ASIDPool)),
+            key=lambda obj: obj.name,
+        )
 
-        # Get all ASIDPools
-        for obj in spec.objs:
-            if isinstance(obj, ASIDPool):
-                asid_pools.append(obj)
-        # Make deterministic
-        asid_pools = sorted(asid_pools, key=lambda obj: obj.name)
-
-        # Check availability of asid_highs; check existing claims
+        # Check availability of asid_highs.
+        # Honor existing claims first.
         for asid_pool in asid_pools:
-            if asid_pool.asid_high is not None:
-                if asid_pool.asid_high < 0 or asid_pool.asid_high >= num_asid_high:
-                    raise AllocatorException("invalid asid_high of 0x%x, ASID pool %s" %
-                                             (asid_pool.asid_high, asid_pool.name))
-                elif asid_pool.asid_high in free_asid_highs:
-                    raise AllocatorException("asid_high 0x%x already in use, can't give to ASID pool %s" %
-                                             (asid_pool.asid_high, asid_pool.name))
-                else:
-                    free_asid_highs.remove(asid_pool.asid_high)
+            if asid_pool.asid_high is None:
+                continue
+            if not (0 <= asid_pool.asid_high < num_asid_high):
+                raise AllocatorException(
+                    "invalid asid_high of 0x%x, ASID pool %s"
+                    % (asid_pool.asid_high, asid_pool.name))
+            if asid_pool.asid_high not in free_asid_highs:
+                raise AllocatorException(
+                    "asid_high 0x%x already in use, can't give to ASID pool %s"
+                    % (asid_pool.asid_high, asid_pool.name))
+            free_asid_highs.remove(asid_pool.asid_high)
 
         # Allocate free_asid_highs
         for asid_pool in asid_pools:
@@ -395,8 +409,7 @@ class ASIDTableAllocator(object):
                 if not free_asid_highs:
                     raise AllocatorException("ran out of asid_highs to allocate (next ASID pool: %s)" %
                                              asid_pool.name)
-                else:
-                    asid_pool.asid_high = free_asid_highs.pop(0)
+                asid_pool.asid_high = free_asid_highs.pop(0)
 
         # Check that asid_highs are contiguous
         for asid_pool in asid_pools:
@@ -405,7 +418,7 @@ class ASIDTableAllocator(object):
                                          (asid_pool.name, asid_pool.asid_high, asid_pool.asid_high - 1))
 
 
-class UntypedAllocator(six.with_metaclass(abc.ABCMeta, object)):
+class UntypedAllocator(object, metaclass=abc.ABCMeta):
     """
     An allocation interface for assigning objects to specific untypeds.
     Each untyped allocator implements its own policy.
@@ -463,11 +476,13 @@ class AllocQueue:
             self.sizes.add(size_bits)
 
     def pop_fun(self, size_bits):
-        if size_bits in self.objects:
-            popped = self.objects[size_bits].pop()
-            if not len(self.objects[size_bits]):
-                self.sizes.remove(size_bits)
-                del self.objects[size_bits]
+        if size_bits not in self.objects:
+            return None
+
+        popped = self.objects[size_bits].pop()
+        if not len(self.objects[size_bits]):
+            self.sizes.remove(size_bits)
+            del self.objects[size_bits]
         return popped
 
     def _push_unfun_obj(self, o):
@@ -520,15 +535,15 @@ class BestFitAllocator(UntypedAllocator):
         assert isinstance(before, Untyped)
         assert isinstance(after, Untyped)
         assert (before.paddr <= after.paddr)
-        return not (before.paddr < after.paddr and ((before.paddr + before.get_size()) < (after.paddr + after.get_size())))
+        return before.paddr + before.get_size() > after.paddr
 
     @staticmethod
     def _overlap_exception(u, overlap):
         assert isinstance(u, Untyped)
         assert isinstance(overlap, Untyped)
-        raise AllocatorException("New untyped (%x <--> %x) would overlap with existing (%x <--> %x)",
-                                 u.paddr, u.paddr + u.get_size(),
-                                 overlap.paddr, overlap.paddr + overlap.get_size())
+        raise AllocatorException("New untyped (%x <--> %x) would overlap with existing (%x <--> %x)" %
+                                 (u.paddr, u.paddr + u.get_size(),
+                                 overlap.paddr, overlap.paddr + overlap.get_size()))
 
     def add_untyped(self, u, device=False):
         """
@@ -539,7 +554,7 @@ class BestFitAllocator(UntypedAllocator):
         if u.paddr is None:
             raise AllocatorException("Untyped has no defined paddr")
         if not is_aligned(u.paddr, u.get_size_bits()):
-            raise AllocatorException("Untyped at %x is not aligned", u.paddr)
+            raise AllocatorException("Untyped at %x is not aligned" % u.paddr)
 
         # check overlap
         index = self.untyped.bisect_right((u, device))
@@ -617,7 +632,7 @@ class BestFitAllocator(UntypedAllocator):
 
         if not len(s.objs):
             # nothing to do
-            logging.warn("No objects to allocate")
+            logging.warning("No objects to allocate")
             return
 
         # put the objects from spec into the order we need to complete allocation

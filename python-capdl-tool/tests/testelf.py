@@ -5,45 +5,46 @@
 # SPDX-License-Identifier: BSD-2-Clause
 #
 
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
-
 import unittest
+from pathlib import Path
 
 from capdl import ELF
 from tests import CapdlTestCase
 
+RESOURCES = Path(__file__).parent / 'resources'
+
 
 class TestElf(CapdlTestCase):
 
-    def test_elf(self):
-        elf = ELF('resources/arm-hello.bin')
-        assert elf.get_arch() in [40, 'EM_ARM', 'ARM']
-        elf.get_spec()
+    def _load(self, name):
+        return ELF(str(RESOURCES / name))
+
+    def test_arm_elf(self):
+        elf = self._load('arm-hello.bin')
+        self.assertIn(elf.get_arch(), [40, 'EM_ARM', 'ARM'])
+        elf.get_spec()  # smoke test: must not raise
 
     def test_ia32_elf(self):
-        elf = ELF('resources/ia32-hello.bin')
-        assert elf.get_arch() == 'x86'
+        elf = self._load('ia32-hello.bin')
+        self.assertEqual(elf.get_arch(), 'x86')
+        elf.get_spec()  # smoke test: must not raise
 
-        elf.get_spec()
+    def test_symbol_lookup_unstripped(self):
+        elf = self._load('unstripped.bin')
+        self.assertEqual(elf.get_arch(), 'x86')
+        # Address cross-checked against objdump.
+        self.assertEqual(elf.get_symbol_vaddr('_start'), 0x08048d48)
 
-    def test_symbol_lookup(self):
-        elf = ELF('resources/unstripped.bin')
-        assert elf.get_arch() == 'x86'
+    def test_symbol_lookup_stripped_arch(self):
+        elf = self._load('stripped.bin')
+        self.assertEqual(elf.get_arch(), 'x86')
 
-        # Confirm that the address concurs with the one we get from objdump.
-        assert elf.get_symbol_vaddr('_start') == 0x08048d48
-
-        elf = ELF('resources/stripped.bin')
-        assert elf.get_arch() == 'x86'
-
-        # We shouldn't be able to get the symbol from the stripped binary.
-        try:
-            vaddr = elf.get_symbol_vaddr('_start')
-            assert not ('Symbol lookup on a stripped binary returned _start == 0x%0.8x' % vaddr)
-        except:
-            # Expected
-            pass
+    def test_symbol_lookup_stripped_raises(self):
+        elf = self._load('stripped.bin')
+        # Stripped binaries have no symbol table; lookup must fail loudly
+        # rather than silently returning a bogus address.
+        with self.assertRaises(Exception):  # narrow this — see note below
+            elf.get_symbol_vaddr('_start')
 
 
 if __name__ == '__main__':
