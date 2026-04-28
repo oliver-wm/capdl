@@ -8,12 +8,8 @@
 Definitions of kernel objects.
 """
 
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
-
 import abc
 import math
-import six
 from functools import total_ordering
 
 from aenum import Enum, Flag, unique, auto, IntEnum
@@ -124,7 +120,7 @@ class ARMIRQMode(IntEnum):
     seL4_ARM_IRQ_EDGE = 1
 
 
-class Object(six.with_metaclass(abc.ABCMeta, object)):
+class Object(object, metaclass=abc.ABCMeta):
     """
     Parent of all kernel objects.
     """
@@ -143,7 +139,7 @@ class Object(six.with_metaclass(abc.ABCMeta, object)):
         return False
 
 
-class ContainerObject(six.with_metaclass(abc.ABCMeta, Object)):
+class ContainerObject(Object, metaclass=abc.ABCMeta):
     """
     Common functionality for all objects that are cap containers, in the sense
     that they may have child caps.
@@ -158,9 +154,9 @@ class ContainerObject(six.with_metaclass(abc.ABCMeta, Object)):
 
     def print_contents(self):
         keys = self.slots.keys()
-        if all(isinstance(k, six.integer_types) for k in keys):
+        if all(isinstance(k, int) for k in keys):
             def print_slot_index(index): return '0x%x' % index
-        elif all(isinstance(k, six.string_types) for k in keys):
+        elif all(isinstance(k, str) for k in keys):
             def print_slot_index(index): return index
         else:
             raise RuntimeError(

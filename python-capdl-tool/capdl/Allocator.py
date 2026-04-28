@@ -4,14 +4,9 @@
 # SPDX-License-Identifier: BSD-2-Clause
 #
 
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
-
 import abc
 import collections
 import logging
-
-import six
 from sortedcontainers import SortedList, SortedSet, SortedDict
 
 from .Cap import Cap
@@ -422,7 +417,7 @@ class ASIDTableAllocator(object):
                                          (asid_pool.name, asid_pool.asid_high, asid_pool.asid_high - 1))
 
 
-class UntypedAllocator(six.with_metaclass(abc.ABCMeta, object)):
+class UntypedAllocator(object, metaclass=abc.ABCMeta):
     """
     An allocation interface for assigning objects to specific untypeds.
     Each untyped allocator implements its own policy.
@@ -636,7 +631,7 @@ class BestFitAllocator(UntypedAllocator):
 
         if not len(s.objs):
             # nothing to do
-            logging.warn("No objects to allocate")
+            logging.warning("No objects to allocate")
             return
 
         # put the objects from spec into the order we need to complete allocation

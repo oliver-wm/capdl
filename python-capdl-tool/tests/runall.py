@@ -10,8 +10,6 @@
 This script is a quick way to execute the tests for all capdl-python modules.
 """
 
-from __future__ import absolute_import, division, print_function, \
-    unicode_literals
 from concurrencytest import ConcurrentTestSuite, fork_for_tests
 
 import argparse
@@ -34,7 +32,7 @@ def main(argv):
     loader = unittest.TestLoader()
     test_suite = unittest.TestSuite()
     print("Looking for tests in {0}".format(os.path.dirname(ME)))
-    test_suite.addTests(loader.discover(os.path.dirname(ME), pattern="*.py"))
+    test_suite.addTests(loader.discover(os.path.dirname(ME), pattern="test*.py"))
 
     concurrent_suite = ConcurrentTestSuite(test_suite, fork_for_tests(multiprocessing.cpu_count()))
     runner = unittest.TextTestRunner(verbosity=options.verbosity)
