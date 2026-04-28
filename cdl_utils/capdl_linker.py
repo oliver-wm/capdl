@@ -9,15 +9,12 @@ from capdl.Object import register_object_sizes, Untyped
 from capdl.Allocator import ASIDTableAllocator, BestFitAllocator
 from capdl import ELF, lookup_architecture, TCB, valid_architectures
 from importlib.metadata import version
-from jinja2 import Environment, BaseLoader, FileSystemLoader
+from jinja2 import Environment, BaseLoader
 import sys
 import argparse
 import pickle
-import logging
 import os
-import tempfile
 import yaml
-import six
 
 
 CSPACE_TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), "templates/cspace.template.c")
