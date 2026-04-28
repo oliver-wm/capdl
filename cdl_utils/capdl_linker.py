@@ -16,18 +16,18 @@ import pickle
 import os
 import yaml
 
-
 CSPACE_TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), "templates/cspace.template.c")
 
+def _parse_versionstr(v):
+    return tuple(int(p) for p in v.split(".") if p.isdigit())
 
 def manifest(cap_symbols, region_symbols, architecture, targets):
     """
     Generates a c file from CSPACE_TEMPLATE_FILE with some runtime information
     about CSpace slots and special address ranges
     """
-    jinja2_version = version("jinja2")
-    if jinja2_version < "2.10":
-        raise Warning("Jinja2 should be >= 2.10")
+    if _parse_versionstr(version("jinja2")) < (2,10):
+        raise ImportError("Jinja2 should be >= 2.10")
 
     temp_file = open(CSPACE_TEMPLATE_FILE, 'r').read()
     template = Environment(loader=BaseLoader).from_string(temp_file)
@@ -86,7 +86,7 @@ def main():
     parser_a.add_argument('--manifest-in', type=argparse.FileType('rb'))
     parser_a.add_argument('--elffile', nargs='+', action='append')
     parser_b = subparsers.add_parser('gen_cdl')
-    parser_b.add_argument('--outfile', type=argparse.FileType('w'))
+    parser_b.add_argument('--outfile', type=argparse.FileType('w'), required=True)
     parser_b.set_defaults(which="gen_cdl")
     parser_b.add_argument('--manifest-in', type=argparse.FileType('rb'))
     parser_b.add_argument('--elffile', nargs='+', action='append')

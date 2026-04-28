@@ -248,14 +248,15 @@ class CSpaceAllocator(object):
             cap = None
         else:
             if 'rights' in kwargs:
+                rights = kwargs.pop('rights')
                 assert 'read' not in kwargs
                 assert 'write' not in kwargs
                 assert 'grant' not in kwargs
                 assert 'grantreply' not in kwargs
-                kwargs['read'] = kwargs['rights'] & ObjectRights.seL4_CanRead > 0
-                kwargs['write'] = kwargs['rights'] & ObjectRights.seL4_CanWrite > 0
-                kwargs['grant'] = kwargs['rights'] & ObjectRights.seL4_CanGrant > 0
-                kwargs['grantreply'] = kwargs['rights'] & ObjectRights.seL4_CanGrantReply > 0
+                kwargs['read'] = rights & ObjectRights.seL4_CanRead > 0
+                kwargs['write'] = rights & ObjectRights.seL4_CanWrite > 0
+                kwargs['grant'] = rights & ObjectRights.seL4_CanGrant > 0
+                kwargs['grantreply'] = rights & ObjectRights.seL4_CanGrantReply > 0
             cap = Cap(obj, **kwargs)
         if isinstance(obj, CNode):
             obj.update_guard_size_caps.append(cap)
@@ -534,15 +535,15 @@ class BestFitAllocator(UntypedAllocator):
         assert isinstance(before, Untyped)
         assert isinstance(after, Untyped)
         assert (before.paddr <= after.paddr)
-        return not (before.paddr < after.paddr and ((before.paddr + before.get_size()) < (after.paddr + after.get_size())))
+        return before.paddr + before.get_size() > after.paddr
 
     @staticmethod
     def _overlap_exception(u, overlap):
         assert isinstance(u, Untyped)
         assert isinstance(overlap, Untyped)
-        raise AllocatorException("New untyped (%x <--> %x) would overlap with existing (%x <--> %x)",
-                                 u.paddr, u.paddr + u.get_size(),
-                                 overlap.paddr, overlap.paddr + overlap.get_size())
+        raise AllocatorException("New untyped (%x <--> %x) would overlap with existing (%x <--> %x)" %
+                                 (u.paddr, u.paddr + u.get_size(),
+                                 overlap.paddr, overlap.paddr + overlap.get_size()))
 
     def add_untyped(self, u, device=False):
         """
@@ -553,7 +554,7 @@ class BestFitAllocator(UntypedAllocator):
         if u.paddr is None:
             raise AllocatorException("Untyped has no defined paddr")
         if not is_aligned(u.paddr, u.get_size_bits()):
-            raise AllocatorException("Untyped at %x is not aligned", u.paddr)
+            raise AllocatorException("Untyped at %x is not aligned" % u.paddr)
 
         # check overlap
         index = self.untyped.bisect_right((u, device))

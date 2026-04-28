@@ -184,11 +184,11 @@ class ContainerObject(Object, metaclass=abc.ABCMeta):
 
 
 class Frame(Object):
-    def __init__(self, name, size=4096, paddr=None, fill=[], **_):
+    def __init__(self, name, size=4096, paddr=None, fill=None, **_):
         super(Frame, self).__init__(name)
         self.size = size
         self.paddr = paddr
-        self.fill = fill
+        self.fill = fill if fill is not None else []
         # check the size is aligned to a power of 2
         assert (self.size == (1 << self.get_size_bits()))
 
@@ -682,16 +682,12 @@ class StreamID(Object):
 
 
 class ContextBank(Object):
-    def __init__(self, name):
+    def __init__(self, name, bank=None):
         super().__init__(name)
-
-        # Assignment of context bank numbers will evolve with use case
-        self.bank = 0
+        self.bank = bank or 0
 
     def __repr__(self):
-        s = '%s = contextbank (bank: %d)' % (self.name, self.bank)
-        self.bank += 1
-        return s
+        return '%s = contextbank (bank: %d)' % (self.name, self.bank)
 
     def get_size_bits(self):
         return None

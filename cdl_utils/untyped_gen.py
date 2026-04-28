@@ -57,7 +57,7 @@ def init_freemem(available, reserved):
         if reserved[0].start == reserved[0].end:
             # reserved region is empty - skip it
             reserved.popleft()
-        if available[0].start >= available[0].end:
+        elif available[0].start >= available[0].end:
             # skip the entire region - it's empty now after trimming
             available.popleft()
         elif reserved[0].end <= available[0].start:
@@ -109,7 +109,8 @@ def get_symbol_size(elf, name):
     symbol = symbol_table.get_symbol_by_name(name)
     if not symbol:
         logging.fatal("No symbol {0}".format(name))
-    return symbol['st_size']
+        raise AssertionError(f"Could not find symbol {name} in ELF section .symtab")
+    return symbol[0]['st_size']
 
 
 def main(args):
